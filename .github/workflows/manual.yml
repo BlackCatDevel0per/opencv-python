@@ -1,29 +1,221 @@
-# This is a basic workflow that is manually triggered
+name: Build PYPI wheels for opencv-pypy on Linux x86_64
 
-name: Manual workflow
-
- runs when manually triggered using the UI
-# or API.
 on:
-  workflow_dispatch:
-    # Inputs the workflow accepts.
-    inputs:
-      name:
-        # Friendly description to be shown in the UI instead of 'name'
-        description: 'Person to greet'
-        # Default value if no value is explicitly provided
-        default: 'World'
-        # Input has to be provided for the workflow to run
-        required: true
+  pull_request:
+    branches:
+      - master
+    paths-ignore:
+      - '.github/workflows/build_wheels_linux_arm.yml'
+      - '.github/workflows/build_wheels_windows*'
+      - '.github/workflows/build_wheels_macos*'
+  release:
+    types: [published, edited]
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+
 jobs:
-  # This workflow contains a single job called "greet"
-  greet:
-    # The type of runner that the job will run on
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        pypy-version: ['3.8']
+        platform: [x64]
+        with_contrib: [0, 1]
+        without_gui: [0, 1]
+        build_sdist: [0]
+
+    env:
+      ACTIONS_ALLOW_UNSECURE_COMMANDS: true
+      REPO_DIR: .
+      BUILD_COMMIT: master
+      PROJECT_SPEC: opencv-pypy
+      MB_PYPY_VERSION: ${{ matrix.pypy-version }}
+      TRAVIS_PYPY_VERSION: ${{ matrix.pypy-version }}
+      MB_ML_VER: 2014
+      TRAVIS_BUILD_DIR: ${{ github.workspace }}
+      CONFIG_PATH: travis_config.sh
+      DOCKER_IMAGE: quay.io/asenyaev/manylinux2014_${PLAT}
+      USE_CCACHE: 1
+      UNICODE_WIDTH: 32
+      PLAT: x86_64
+      SDIST: ${{ matrix.build_sdist || 0 }}
+      ENABLE_HEADLESS: ${{ matrix.without_gui }}
+      ENABLE_CONTRIB: ${{ matrix.with_contrib }}
+
     steps:
-    # Runs a single command using the runners shell
+    - name: Checkout
+      uses: actions/checkout@v2
+      with:
+        submodules: false
+        fetch-depth: 0
+
+    - name: Update submodules
+      if: github.event_name == 'pull_request'
+      run: git submodule update --remote
+
+    - name: Build a package
+      run: source scripts/build.sh
+
+    - name: Saving all wheels
+      uses: actions/upload-artifact@v2
+      with:
+        name: wheels
+        path: wheelhouse/opencv*.whl
+
+    - name: Saving a wheel accordingly to matrix
+      uses: actions/upload-artifact@v2
+      with:
+        name: wheel-${{ matrix.with_contrib }}-${{ matrix.without_gui }}-${{ matrix.build_sdist }}
+        path: wheelhouse/opencv*.whl
+
+  test:
+    needs: [build]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        pypy-version: ['3.6', '3.7', '3.8', '3.9', '3.10']
+        platform: [x64]
+        with_contrib: [0, 1]
+        without_gui: [0, 1]
+        build_sdist: [0]
+
+    env:
+      ACTIONS_ALLOW_UNSECURE_COMMANDS: true
+      MB_PYPY_VERSION: ${{ matrix.pypy-version }}
+      NP_TEST_DEP: numpy==1.19.4
+      NP_TEST_DEP_LATEST: numpy==1.21.2
+      CONFIG_PATH: travis_config.sh
+      PLAT: x86_64
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+      with:
+        submodules: false
+        fetch-depth: 0
+
+    - name: Setup Environment variables
+      run: if [ "3.10" == "${{ matrix.pypy-version }}" ]; then echo "TEST_DEPENDS=$(echo $NP_TEST_DEP_LATEST)" >> $GITHUB_ENV; else echo "TEST_DEPENDS=$(echo $NP_TEST_DEP)" >> $GITHUB_ENV; fi
+
+    - name: Download a wheel accordingly to matrix
+      uses: actions/download-artifact@v2
+      with:
+        name: wheel-${{ matrix.with_contrib }}-${{ matrix.without_gui }}-${{ matrix.build_sdist }}
+        path: wheelhouse/
+
+    - name: Package installation and run tests
+      run: source scripts/install.sh
+
+  build_sdist:
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        pypy-version: [3.8]
+        platform: [x64]
+        with_contrib: [0, 1]
+        without_gui: [0, 1]
+        build_sdist: [1]
+
+    env:
+      ACTIONS_ALLOW_UNSECURE_COMMANDS: true
+      REPO_DIR: .
+      BUILD_COMMIT: master
+      PROJECT_SPEC: opencv-pypy
+      PLAT: x86_64
+      MB_PYPY_VERSION: ${{ matrix.pypy-version }}
+      TRAVIS_PYPY_VERSION: ${{ matrix.pypy-version }}
+      MB_ML_VER: 2014
+      NP_TEST_DEP: numpy==1.19.4
+      TRAVIS_BUILD_DIR: ${{ github.workspace }}
+      CONFIG_PATH: travis_config.sh
+      DOCKER_IMAGE: quay.io/asenyaev/manylinux2014_${PLAT}
+      USE_CCACHE: 1
+      UNICODE_WIDTH: 32
+      SDIST: ${{ matrix.build_sdist || 0 }}
+      ENABLE_HEADLESS: ${{ matrix.without_gui || 0 }}
+      ENABLE_CONTRIB: ${{ matrix.with_contrib || 0 }}
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+      with:
+        submodules: false
+        fetch-depth: 0
+
+    - name: Update submodules
+      if: github.event_name == 'pull_request'
+      run: git submodule update --remote
+
+    - name: Set up pypy ${{ matrix.pypy-version }}
+      uses: actions/setup-pypy@v2
+      with:
+        pypy-version: ${{ matrix.pypy-version }}
+        architecture: ${{ matrix.platform }}
+
+    - name: Build a package
+      run: |
+        set -e
+        # Build and package
+        set -x
+          pypy3 -m pip install --upgrade pip
+          pypy3 -m pip install scikit-build
+          pypy3 setup.py sdist
+        set +x
+        # Install and run tests
+        set -x
+        echo "skipping tests because of sdist"
+    - name: saving artifacts
+      uses: actions/upload-artifact@v2
+      with:
+        name: wheels
+        path: dist/opencv*.tar.gz
+
+  test_release_opencv_pypy:
+    if: github.event_name == 'release' && github.event.release.prerelease
+    needs: [build, build_sdist, test]
+    runs-on: ubuntu-latest
+    environment: test-opencv-pypy-release
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/download-artifact@v2
+        with:
+          name: wheels
+          path: wheelhouse/
+
+      - name: Upload all wheels
+        run: |
+          pypy3 -m pip install twine
+          pypy3 -m twine upload --repository testpypi -u ${{ secrets.PYPI_USERNAME }} -p ${{ secrets.PYPI_PASSWORD }} --skip-existing wheelhouse/opencv_* wheelhouse/opencv-*
+  release_opencv_pypy:
+    if: github.event_name == 'release' && !github.event.release.prerelease
+    needs: [build, build_sdist, test]
+    runs-on: ubuntu-latest
+    environment: opencv-pypy-release
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/download-artifact@v2
+        with:
+          name: wheels
+          path: wheelhouse/
 
