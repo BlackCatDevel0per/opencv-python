@@ -60,7 +60,7 @@ def main():
     )
 
     # https://stackoverflow.com/questions/1405913/python-32bit-or-64bit-mode
-    x64 = sys.maxsize > 2 ** 32
+    is64 = sys.maxsize > 2 ** 32
 
     package_name = "opencv-python"
 
@@ -88,7 +88,7 @@ def main():
     # Path regexes with forward slashes relative to CMake install dir.
     rearrange_cmake_output_data = {
         "cv2": (
-            [r"bin/opencv_videoio_ffmpeg\d{3}%s\.dll" % ("_64" if x64 else "")]
+            [r"bin/opencv_videoio_ffmpeg\d{3}%s\.dll" % ("_64" if is64 else "")]
             if os.name == "nt"
             else []
         )
@@ -130,7 +130,7 @@ def main():
     files_outside_package_dir = {"cv2": ["LICENSE.txt", "LICENSE-3RD-PARTY.txt"]}
 
     ci_cmake_generator = (
-        ["-G", "Visual Studio 14" + (" Win64" if x64 else "")]
+        ["-G", "Visual Studio 14" + (" Win64" if is64 else "")]
         if os.name == "nt"
         else ["-G", "Unix Makefiles"]
     )
@@ -163,9 +163,15 @@ def main():
             "-DBUILD_OPENEXR=ON",
         ]
         + (
+            # CMake flags for windows/arm64 build
+            ["-DCMAKE_GENERATOR_PLATFORM=ARM64",
+             # Emulated cmake requires following flags to correctly detect
+             # target architecture for windows/arm64 build
+             "-DOPENCV_WORKAROUND_CMAKE_20989=ON",
+             "-DCMAKE_SYSTEM_PROCESSOR=ARM64"]
+            if platform.machine() == "ARM64" and sys.platform == "win32"
             # If it is not defined 'linker flags: /machine:X86' on Windows x64
-            ["-DCMAKE_GENERATOR_PLATFORM=x64"]
-            if x64 and sys.platform == "win32"
+            else ["-DCMAKE_GENERATOR_PLATFORM=x64"] if is64 and sys.platform == "win32"
             else []
           )
         + (
@@ -185,7 +191,7 @@ def main():
                 "-DWITH_MSMF=OFF"
             )  # see: https://github.com/skvark/opencv-python/issues/263
 
-    if sys.platform.startswith("linux") and not x64 and "bdist_wheel" in sys.argv:
+    if sys.platform.startswith("linux") and not is64 and "bdist_wheel" in sys.argv:
         subprocess.check_call("patch -p0 < patches/patchOpenEXR", shell=True)
 
     # OS-specific components during CI builds
@@ -368,21 +374,6 @@ class RearrangeCMakeOutput(object):
 
         print("Copying files from CMake output")
 
-        # lines for a proper work using pylint and an autocomplete in IDE
-        with open(os.path.join(cmake_install_dir, "python", "cv2", "__init__.py"), 'r') as opencv_init:
-            opencv_init_lines = opencv_init.readlines()
-            extra_imports = ('\nfrom .cv2 import *\nfrom .cv2 import _registerMatType\nfrom . import mat_wrapper\nfrom . import gapi'
-                             '\nfrom . import misc\nfrom . import utils\nfrom . import data\nfrom . import version\n')
-            free_line_after_imports = 6
-            opencv_init_lines.insert(free_line_after_imports, extra_imports)
-            opencv_init_data = ""
-            for line in opencv_init_lines:
-                opencv_init_replacement = line.replace('importlib.import_module("cv2")', 'importlib.import_module("cv2.cv2")')
-                opencv_init_data = opencv_init_data + opencv_init_replacement
-
-        with open(os.path.join(cmake_install_dir, "python", "cv2", "__init__.py"), 'w') as opencv_final_init:
-            opencv_final_init.write(opencv_init_data)
-
         # add lines from the old __init__.py file to the config file
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scripts', '__init__.py'), 'r') as custom_init:
             custom_init_data = custom_init.read()
@@ -411,7 +402,8 @@ class RearrangeCMakeOutput(object):
                     final_install_relpaths.append(new_install_relpath)
                     del m, fslash_relpath, new_install_relpath
                 else:
-                    if not found:
+                    # gapi can be missed if ADE was not downloaded (network issue)
+                    if not found and "gapi" not in relpath_re:
                         raise Exception("Not found: '%s'" % relpath_re)
                 del r, found
 
@@ -450,7 +442,7 @@ class RearrangeCMakeOutput(object):
             data_files,
             # To get around a check that prepends source dir to paths and breaks package detection code.
             cmake_source_dir="",
-            cmake_install_dir=cmake_install_reldir,
+            _cmake_install_dir=cmake_install_reldir,
         )
 
 

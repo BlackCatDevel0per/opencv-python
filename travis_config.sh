@@ -50,7 +50,7 @@ if [ -n "$IS_OSX" ]; then
     function generate_ffmpeg_formula {
         local FF="ffmpeg"
         local LFF="ffmpeg_opencv"
-        local FF_FORMULA; FF_FORMULA=$(brew formula "$FF")
+        local FF_FORMULA; FF_FORMULA=$(brew formula "${FF}${FFMPEG_FORMULA_VERSION}")
         local LFF_FORMULA; LFF_FORMULA="$(dirname "$FF_FORMULA")/${LFF}.rb"
 
         local REGENERATE
@@ -70,8 +70,9 @@ if [ -n "$IS_OSX" ]; then
         if [ -n "$REGENERATE" ]; then
             echo "Regenerating custom ffmpeg formula"
             # Bottle block syntax: https://docs.brew.sh/Bottles#bottle-dsl-domain-specific-language
+            # FfmpegAT4 is a class in ffmpeg@4 formula
             perl -wpe 'BEGIN {our ($found_blank, $bottle_block);}
-                if (/(^class )(Ffmpeg)(\s.*)/) {$_=$1.$2."Opencv".$3."\n"; next;}
+                if (/(^class )(FfmpegAT4)(\s.*)/) {$_=$1."FfmpegOpencv".$3."\n"; next;}
                 if (!$found_blank && /^$/) {$_.="conflicts_with \"ffmpeg\"\n\n"; $found_blank=1; next;}
                 if (!$bottle_block && /^\s*bottle do$/) { $bottle_block=1; next; }
                 if ($bottle_block) { if (/^\s*end\s*$/) { $bottle_block=0} elsif (/^\s*sha256\s/) {$_=""} next; }
@@ -97,11 +98,6 @@ function pre_build {
 
   if [ -n "$IS_OSX" ]; then
     brew install lapack
-  else
-    # epel-release need for aarch64 to get openblas packages
-    yum install -y lapack-devel epel-release && yum install -y openblas-devel
-    cp /usr/include/lapacke/lapacke*.h /usr/include/
-    curl https://raw.githubusercontent.com/xianyi/OpenBLAS/v0.3.3/cblas.h -o /usr/include/cblas.h
   fi
 
   if [ -n "$IS_OSX" ]; then
@@ -111,34 +107,14 @@ function pre_build {
     CACHE_STAGE=
     export HOMEBREW_NO_AUTO_UPDATE=1
 
-    #after the cache stage, all bottles and Homebrew metadata should be already cached locally
-    # if [ -n "$CACHE_STAGE" ]; then
-    #     brew update
-    #     generate_ffmpeg_formula
-    #     brew_add_local_bottles
-    # fi
-
     echo 'Installing FFmpeg'
 
-    # if [ -n "$CACHE_STAGE" ]; then
-    #     brew_install_and_cache_within_time_limit ffmpeg_opencv || { [ $? -gt 1 ] && return 2 || return 0; }
-    # else
-        brew update
-        generate_ffmpeg_formula
-        brew_add_local_bottles
-        # brew unlink python@2
-        brew install --build-bottle ffmpeg_opencv
-    # fi
-
-    # echo 'Installing qt5'
-
-    # if [ -n "$CACHE_STAGE" ]; then
-    #    echo "Qt5 has bottle, no caching needed"
-    # else
-    #    brew switch qt 5.13.2
-    #    brew pin qt
-    #    export PATH="/usr/local/opt/qt/bin:$PATH"
-    # fi
+    brew update
+    generate_ffmpeg_formula
+    brew_add_local_bottles
+    brew install --build-bottle ffmpeg_opencv
+    # It needs when we use not the latest ffmpeg formula
+    brew link ffmpeg_opencv
 
     if [ -n "$CACHE_STAGE" ]; then
         brew_go_bootstrap_mode 0
@@ -160,36 +136,36 @@ function run_tests {
 
     PYTHON=python$PYTHON_VERSION
 
-    if [ -n "$IS_OSX" ]; then
-      echo "Running for OS X"
+    echo "Running for linux"
 
-      cd ../tests
-      $PYTHON get_build_info.py
-
-      cd ../opencv/
-      export OPENCV_TEST_DATA_PATH=../opencv_extra/testdata
-    else
-      echo "Running for linux"
-
-      if [ $PYTHON == "python3.6" ]; then
-        $PYTHON -m pip install -U numpy==1.19.4
-      fi
-      cd /io/tests
-      $PYTHON get_build_info.py
-
-      cd /io/opencv
-      export OPENCV_TEST_DATA_PATH=/io/opencv_extra/testdata
+    if [ $PYTHON == "python3.6" ]; then
+      $PYTHON -m pip install -U numpy==1.19.4
     fi
+    cd /io/tests
+    $PYTHON get_build_info.py
+
+    cd /io/opencv
+    export OPENCV_TEST_DATA_PATH=/io/opencv_extra/testdata
 
     test_wheels
+    pylint_test
 }
 
 function test_wheels {
 
-    echo "Starting tests..."
+    echo "Starting OpenCV tests..."
 
     #Test package
     $PYTHON modules/python/test/test.py -v --repo .
+}
+
+function pylint_test {
+
+    echo "Starting Pylint tests..."
+
+    $PYTHON -m pip install pylint==2.12.2
+    cd /io/tests
+    $PYTHON -m pylint /io/opencv/samples/python/squares.py
 }
 
 export PS4='+(${BASH_SOURCE}:${LINENO}): ${FUNCNAME[0]:+${FUNCNAME[0]}(): }'
